@@ -5,15 +5,20 @@ build-fuzz/*
 build-centipede/*
 
 # Bazel
-bazel-bin/
-bazel-out/
-bazel-testlogs/
-bazel-caine/
+bazel-bin/*
+bazel-out/*
+bazel-testlogs/*
+bazel-caine/*
 
 # Fuzzing output
 workdir/
 corpus/
+corups-db/
+corpus-db2/
+seeds/
+seeds-frozen/
 
 # Misc
 prompt.txt
 default.profraw
+~/*
