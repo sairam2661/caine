@@ -1,4 +1,19 @@
+# Build directories
 corpus/*
 build/*
 build-fuzz/*
+build-centipede/*
+
+# Bazel
+bazel-bin/
+bazel-out/
+bazel-testlogs/
+bazel-caine/
+
+# Fuzzing output
+workdir/
+corpus/
+
+# Misc
 prompt.txt
+default.profraw
