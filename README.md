@@ -1,120 +1,190 @@
 # LLVM Optimizer Fuzzer
 
-Coverage-guided fuzzing of the LLVM optimizer using
-[FuzzTest/Centipede](https://github.com/google/fuzztest).
+Coverage-guided, crash-tolerant fuzzing of the LLVM O2 optimizer pipeline
+using Centipede as the orchestrator.
 
-## Project Layout
+---
+
+## Overview
+
+Two fuzzing configurations are maintained. Both run the target **out-of-process**
+via Centipede's persistent mode — one crash does not stop fuzzing.
+
+| | Config 3 | Config 2 |
+|---|---|---|
+| **Binary** | `build-centipede/fuzz_targets/opt_crash_fuzzer_centipede` | `bazel-bin/opt_crash_fuzzer` |
+| **Build** | CMake | Bazel |
+| **Centipede** | External binary | Embedded in FuzzTest runtime |
+| **Mutations** | Byte-level (+ `LLVMFuzzerCustomMutator` for IR-level) | Byte-level (+ `ArbitraryLLVMModule()` domain when implemented) |
+| **Crash output** | Raw crashing bytes | Minimized input + regression test draft + assertion message |
+| **Steady exec/s** | ~1,000–2,000/shard | ~1,000–1,400/shard (drops during crash triage) |
+| **Use when** | Max throughput, structured mutations via custom mutator | Need clean crash reports and regression tests |
+
+---
+
+## Directory Layout
 
 ```
-llvm-fuzzer/
-├── CMakeLists.txt              # Root build file — ordering here is critical
-├── fuzz_targets/
-│   ├── CMakeLists.txt          # Defines fuzz target executables
-│   └── opt_crash_fuzzer.cpp    # Fuzz target: find optimizer crashes
-├── scripts/
-│   ├── build_llvm.sh           # Step 1: build instrumented LLVM (run once)
-│   ├── build_fuzzer.sh         # Step 2: build the fuzz targets
-│   └── run_fuzzer.sh           # Step 3: start fuzzing
-└── corpus/                     # Created at runtime; Centipede saves corpus here
+fuzz_targets/
+  opt_crash_fuzzer.cpp            # Config 2 source (FUZZ_TEST macro)
+  opt_crash_fuzzer_centipede.cpp  # Config 3 source (LLVMFuzzerTestOneInput)
+
+build-centipede/                  # Config 3 CMake build output
+  fuzz_targets/opt_crash_fuzzer_centipede
+
+bazel-bin/                        # Config 2 Bazel build output (symlink)
+  opt_crash_fuzzer
+
+seeds-frozen/                     # 289 original .bc seeds — never modify
+seeds/                            # live corpus, grows during fuzzing runs
+
+scripts/
+  compare_configs.sh              # head-to-head comparison script
+  run_centipede.sh                # long-running Config 3 script
+
+MODULE.bazel                      # Bazel deps
+llvm_ext.bzl                      # LLVM module extension for Bazel
+CMakeLists.txt                    # CMake build
+fuzztest.bazelrc                  # Bazel flags for FuzzTest + ASAN
 ```
 
-## Quickstart
+---
 
+## Build
+
+### Config 3 (CMake)
 ```bash
-# Step 1: Install dependencies
-sudo apt install -y clang cmake ninja-build
-
-# Step 2: Build LLVM with coverage + ASAN instrumentation (~30-60min, once)
-./scripts/build_llvm.sh
-
-# Step 3: Build the fuzzer in fuzzing mode
-./scripts/build_fuzzer.sh --fuzz
-
-# Step 4: Start fuzzing
-./scripts/run_fuzzer.sh
-
-# Or with parallel workers:
-./scripts/run_fuzzer.sh --jobs=8
+cd /data/saiva/caine/build-centipede
+cmake --build . --target opt_crash_fuzzer_centipede -j$(nproc)
 ```
 
-To do a quick sanity check without full fuzzing instrumentation:
+### Config 2 (Bazel)
 ```bash
-./scripts/build_fuzzer.sh          # unit test mode (fast)
-./build/fuzz_targets/opt_crash_fuzzer
+cd /data/saiva/caine
+bazel build -c opt \
+    --config=fuzztest-experimental \
+    --config=asan \
+    //:opt_crash_fuzzer
 ```
 
-## Design Decisions
+---
 
-### Why FuzzTest + Centipede over libFuzzer?
+## Run
 
-- Centipede is the successor to libFuzzer (from the same original authors).
-- Out-of-process execution: target crashes don't kill the fuzzer.
-- Scales to distributed fuzzing (multiple machines, many workers) more easily.
-- FuzzTest's `FUZZ_TEST` macro is cleaner than `LLVMFuzzerTestOneInput`.
-- FuzzTest's domain API will let us generate structured valid LLVM IR later.
+### Config 3
+```bash
+/data/saiva/centipede-bin/centipede \
+    --binary=build-centipede/fuzz_targets/opt_crash_fuzzer_centipede \
+    --workdir=/data/saiva/caine/workdir-c3 \
+    --corpus_dir=/data/saiva/caine/seeds-frozen \
+    --j=$(nproc) \
+    --stop_at="$(date -u -d '+1 hour' '+%Y-%m-%dT%H:%M:%SZ')"
+```
 
-### Why is LLVM built separately (not as add_subdirectory)?
+Crashes saved to `workdir-c3/crashes.*` as raw bytes.
 
-`fuzztest_setup_fuzzing_flags()` works as a CMake macro — it modifies
-`CMAKE_CXX_FLAGS` globally for everything defined *after* it is called.
+### Config 2
+```bash
+SEEDS_DIR=/data/saiva/caine/seeds-frozen \
+bazel-bin/opt_crash_fuzzer \
+    --fuzz=LLVMOptimizerFuzz.OptimizeNeverCrashes \
+    --corpus_database=/data/saiva/caine/corpus-db \
+    --jobs=$(nproc) \
+    --fuzz_for=3600s \
+    --continue_after_crash=true \
+    --time_limit_per_input=5s
+```
 
-The FuzzTest CMakeLists.txt calls `fuzztest_setup_fuzzing_flags()` internally
-right after its own `add_subdirectory` calls. If LLVM were added as a
-subdirectory of our project *before* FuzzTest, FuzzTest's internal call would
-apply coverage flags to LLVM. If added *after*, our call would apply them.
-Either way leads to LLVM being built inside our CMake graph, which conflicts
-with LLVM's own complex CMake setup.
+Crashes saved to `corpus-db/opt_crash_fuzzer/LLVMOptimizerFuzz.OptimizeNeverCrashes/crashing/`
+with minimized inputs and regression test drafts in the log.
 
-Pre-building LLVM and consuming it via `find_package(LLVM)` avoids all of
-this cleanly, and has the practical benefit of separating the 30-60min LLVM
-build from the seconds-long fuzzer build during development.
+### Compare both (cold start)
+```bash
+./scripts/compare_configs.sh --duration=300   # 5 min each
+./scripts/compare_configs.sh --duration=600   # 10 min each
+```
 
-### Why instrument LLVM itself with coverage flags?
+---
 
-We want Centipede to get coverage signal from *inside* the optimizer passes,
-not just from our thin wrapper. If LLVM is built without coverage
-instrumentation, Centipede sees almost no edges and has nothing to guide
-mutations with — the fuzzer becomes essentially random.
+## Crash Reports
 
-### Why keep `-UNDEBUG` / `LLVM_ENABLE_ASSERTIONS=ON`?
+### Config 3
+Raw crashing bytes only. To see the assertion:
+```bash
+/data/saiva/caine/build-centipede/fuzz_targets/opt_crash_fuzzer_centipede \
+    < workdir-c3/crashes.000000/<hash> 2>&1 | grep "Assertion"
+```
 
-LLVM's optimizer contains hundreds of `assert()` and `llvm_unreachable()`
-calls that check invariants the passes rely on. These are bugs we want to
-find. A release build with assertions disabled would silently skip past many
-of them and continue into undefined behavior territory.
+### Config 2
+FuzzTest logs contain for each crash:
+- Assertion message and file location
+- Minimized input as C++ string literal
+- Ready-to-use regression test draft
+- Stack trace
 
-`fuzztest_setup_fuzzing_flags()` sets `-UNDEBUG` on the fuzzer side.
-`-DLLVM_ENABLE_ASSERTIONS=ON` in `build_llvm.sh` sets it on the LLVM side.
+Extract all unique assertions from a run:
+```bash
+grep "CRASH LOG:.*failed\." <logfile> \
+    | grep -oP "Assertion.*failed\." \
+    | sort -u
+```
 
-### Why bitcode as the input format (not text IR)?
+Replay a saved crash:
+```bash
+FUZZTEST_REPLAY=corpus-db/opt_crash_fuzzer/LLVMOptimizerFuzz.OptimizeNeverCrashes/crashing/<hash> \
+bazel-bin/opt_crash_fuzzer \
+    --gtest_filter=LLVMOptimizerFuzz.OptimizeNeverCrashes
+```
 
-- More compact: mutations are more efficient per byte.
-- The bitcode parser is itself a fuzzing target.
-- Text IR parsing can be added later as a second fuzz target if desired.
+---
 
-## Adding New Fuzz Targets
+## Adding Structured Mutations
 
-To add a second target (e.g., for miscompilation detection with Alive2):
+Both configs support IR-level mutation. Choose based on your tool's interface:
 
-1. Add `miscompilation_fuzzer.cpp` to `fuzz_targets/`
-2. Add to `fuzz_targets/CMakeLists.txt`:
-   ```cmake
-   add_executable(miscompilation_fuzzer miscompilation_fuzzer.cpp)
-   target_link_libraries(miscompilation_fuzzer PRIVATE ${LLVM_LIBS})
-   link_fuzztest(miscompilation_fuzzer)
-   gtest_discover_tests(miscompilation_fuzzer)
-   ```
-3. Run `./scripts/build_fuzzer.sh --fuzz` (LLVM does not need to be rebuilt)
-4. Run `./build-fuzz/fuzz_targets/miscompilation_fuzzer --fuzz=<Suite>.<Test>`
+### In-memory (`llvm::Module*`) → Config 3 custom mutator
+Add to `fuzz_targets/opt_crash_fuzzer_centipede.cpp`:
+```cpp
+extern "C" size_t LLVMFuzzerCustomMutator(
+    uint8_t* data, size_t size, size_t max_size, unsigned int seed) {
+  auto M = parseBitcodeToModule(data, size);
+  if (!M) return LLVMFuzzerMutate(data, size, max_size);
+  YourMutationTool::mutate(*M, seed);
+  return serializeModule(*M, data, max_size);
+}
+```
 
-## Future Work
+### File-based (`*.ll`) → offline seed expansion
+```bash
+for bc in seeds-frozen/*.bc; do
+    your-mutation-tool ${bc} --output-dir=seeds-expanded/
+done
+# Use seeds-expanded/ as corpus_dir
+```
 
-- **Structured IR generation**: use FuzzTest's domain API to generate valid
-  LLVM IR directly, bypassing the bitcode parser rejection rate.
-- **Miscompilation detection**: integrate Alive2 as a second oracle.
-- **Per-pass targets**: fuzz individual passes (instcombine, sroa, mem2reg)
-  in isolation for faster iteration.
-- **Corpus seeding**: seed the corpus from LLVM's own test suite (`llvm/test/`)
-  which contains many interesting IR patterns.
-- **Distributed fuzzing**: Centipede natively supports distributed workloads
-  via shared workdirs.
+### Typed domain → Config 2 (future)
+Implement `ArbitraryLLVMModule()` domain in `opt_crash_fuzzer.cpp` to get
+FuzzTest's mutation coverage tracking and corpus prioritization.
+
+---
+
+## Key External Paths
+
+| What | Path |
+|---|---|
+| External Centipede | `/data/saiva/centipede-bin/centipede` |
+| LLVM source | `/data/saiva/llvm-project/` |
+| FuzzTest source | `/data/saiva/fuzztest/` |
+| LLVM Bazel overlay patch | `/data/saiva/llvm-project/utils/bazel/configure.bzl` |
+
+---
+
+## Notes
+
+- `seeds-frozen/` must never be used as a write target — always copy before passing
+  to Centipede's `--corpus_dir` (it writes back to that directory).
+- Config 2 requires `SEEDS_DIR` env var to load seeds. Without it, only 32
+  random FuzzTest-generated seeds are used.
+- Bazel build takes ~800s clean. Incremental rebuilds are fast.
+- The Bazel LLVM overlay required three patches to work as a dependency
+  (see handoff doc for details).
