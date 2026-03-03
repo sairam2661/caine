@@ -1,0 +1,52 @@
+module(
+    name = "llvm_fuzzer",
+    version = "head",
+)
+
+# ---------------------------------------------------------------------------
+# Core build rules
+# ---------------------------------------------------------------------------
+bazel_dep(name = "rules_cc", version = "0.2.17")
+bazel_dep(name = "rules_shell", version = "0.6.1")
+bazel_dep(name = "rules_python", version = "1.6.3")        # required by llvm-project-overlay (mlir)
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "platforms", version = "1.0.0")
+
+# ---------------------------------------------------------------------------
+# LLVM's required deps (pulled from llvm-project-overlay/MODULE.bazel)
+# These must be declared here because caine is the root module -
+# transitive deps from local_path_override modules are not auto-resolved.
+# ---------------------------------------------------------------------------
+bazel_dep(name = "apple_support", version = "1.24.2", repo_name = "build_bazel_apple_support")
+bazel_dep(name = "protobuf", version = "33.5", repo_name = "com_google_protobuf")
+bazel_dep(name = "rules_android", version = "0.6.6")
+bazel_dep(name = "rules_foreign_cc", version = "0.15.1")
+bazel_dep(name = "zlib-ng", version = "2.0.7", repo_name = "llvm_zlib")
+bazel_dep(name = "zstd", version = "1.5.7", repo_name = "llvm_zstd")
+
+# ---------------------------------------------------------------------------
+# FuzzTest + Centipede (local source)
+# ---------------------------------------------------------------------------
+bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
+bazel_dep(name = "abseil-cpp", version = "20260107.1")
+bazel_dep(name = "fuzztest", version = "head", repo_name = "com_google_fuzztest")
+local_path_override(
+    module_name = "fuzztest",
+    path = "/data/saiva/fuzztest",
+)
+
+# ---------------------------------------------------------------------------
+# LLVM (via its Bazel overlay, local source)
+# ---------------------------------------------------------------------------
+bazel_dep(name = "llvm-project-overlay", version = "head")
+local_path_override(
+    module_name = "llvm-project-overlay",
+    path = "/data/saiva/llvm-project/utils/bazel",
+)
+
+# Wire up @llvm-raw (raw LLVM source tree) and @llvm-project (configured overlay)
+# via our custom module extension in llvm_ext.bzl.
+# llvm_ext.bzl creates a new_local_repository pointing at /data/saiva/llvm-project
+# and then calls llvm_configure to produce the final @llvm-project repo.
+llvm_configure_ext = use_extension("//:llvm_ext.bzl", "llvm_configure_ext")
+use_repo(llvm_configure_ext, "llvm-project", "llvm-raw")
