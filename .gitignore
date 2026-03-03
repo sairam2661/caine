@@ -13,7 +13,7 @@ bazel-caine/*
 # Fuzzing output
 workdir/
 corpus/
-corups-db/
+corups-db/*
 corpus-db2/
 seeds/
 seeds-frozen/
