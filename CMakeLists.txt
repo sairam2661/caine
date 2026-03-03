@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
-project(llvm_fuzzer CXX C)
+project(caine CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ---------------------------------------------------------------------------
-# Paths — override via -DFUZZTEST_SRC=... -DLLVM_BUILD_DIR=... if needed
+# Paths - override via -DFUZZTEST_SRC=... -DLLVM_BUILD_DIR=... if needed
 # ---------------------------------------------------------------------------
 set(FUZZTEST_SRC      "/data/saiva/fuzztest"                        CACHE PATH "Path to fuzztest source")
 set(LLVM_BUILD_DIR    "/data/saiva/llvm-project/build-fuzz"         CACHE PATH "Path to instrumented LLVM build")
@@ -18,7 +18,7 @@ set(LLVM_BUILD_DIR    "/data/saiva/llvm-project/build-fuzz"         CACHE PATH "
 # fuzztest/cmake/FuzzTestFlagSetup.cmake) sets CMAKE_CXX_FLAGS globally via
 # a macro. If FuzzTest's own targets are added after that macro runs, they
 # will be compiled with coverage+asan flags, which causes the fuzzer to fuzz
-# itself — a documented footgun in the FuzzTest CMake quickstart.
+# itself - a documented footgun in the FuzzTest CMake quickstart.
 # ---------------------------------------------------------------------------
 add_subdirectory(${FUZZTEST_SRC} fuzztest_build)
 

@@ -82,7 +82,7 @@ cmake -S "${LLVM_SRC}/llvm" -B "${LLVM_BUILD}" \
     -DLLVM_BUILD_LLVM_DYLIB=OFF \
     \
     `# Skip things we don't need — saves significant build time.` \
-    -DLLVM_BUILD_TOOLS=OFF \
+    -DLLVM_BUILD_TOOLS=ON \
     -DLLVM_BUILD_UTILS=OFF \
     -DLLVM_INCLUDE_TESTS=OFF \
     -DLLVM_INCLUDE_BENCHMARKS=OFF \
@@ -96,6 +96,9 @@ echo ""
 # Build only the components we need for the fuzzer.
 # This avoids building the entire LLVM (which includes many tools we don't need).
 ninja -C "${LLVM_BUILD}" -j "${JOBS}" \
+    llvm-as \
+    llvm-dis \
+    opt \
     LLVMCore \
     LLVMIRReader \
     LLVMBitWriter \
